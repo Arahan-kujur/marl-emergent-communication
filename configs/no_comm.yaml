@@ -1,0 +1,18 @@
+communication_mode: "no_comm"
+resource_spawn_rate: 10
+shared_reward: false
+
+grid_size: 10
+num_agents: 2
+max_steps: 100
+max_resources: 5
+num_episodes: 1000
+
+learning_rate: 0.0003
+gamma: 0.99
+gae_lambda: 0.95
+clip_ratio: 0.2
+update_epochs: 4
+batch_size: 256
+
+log_dir: "runs"
