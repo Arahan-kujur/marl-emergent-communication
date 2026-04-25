@@ -1,13 +1,13 @@
 import numpy as np
 import torch
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from env.gridworld import GridWorld
 from agents.agent import AgentNetwork
 from communication.channel import CommunicationChannel
 from training.ppo import PPO, RolloutBuffer
 from utils.logger import Logger
-from analysis.metrics import compute_communication_entropy
+from analysis.metrics import compute_communication_entropy, compute_message_diversity
 
 
 class Trainer:
@@ -16,12 +16,13 @@ class Trainer:
 
         self.comm_mode = config.get("communication_mode", "no_comm")
         self.resource_spawn_rate = config.get("resource_spawn_rate", 10)
-        self.shared_reward = config.get("shared_reward", False)
+        self.shared_reward = config.get("shared_reward", True)
         self.num_episodes = config.get("num_episodes", 1000)
         self.max_steps = config.get("max_steps", 100)
         self.grid_size = config.get("grid_size", 10)
         self.num_agents = config.get("num_agents", 2)
         self.max_resources = config.get("max_resources", 5)
+        self.vision_radius = config.get("vision_radius", 3)
 
         self.env = GridWorld(
             grid_size=self.grid_size,
@@ -30,6 +31,7 @@ class Trainer:
             resource_spawn_rate=self.resource_spawn_rate,
             max_resources=self.max_resources,
             shared_reward=self.shared_reward,
+            vision_radius=self.vision_radius,
         )
 
         self.channel = CommunicationChannel(
@@ -58,7 +60,14 @@ class Trainer:
         )
 
         log_dir = config.get("log_dir", "runs")
-        self.logger = Logger(log_dir=f"{log_dir}/{self.comm_mode}")
+        csv_path = config.get("csv_path", None)
+        self.logger = Logger(
+            log_dir=f"{log_dir}/{self.comm_mode}",
+            csv_path=csv_path,
+        )
+
+        self.reward_history: List[float] = []
+        self.success_history: List[float] = []
 
     def _get_message_length(self) -> int:
         if self.comm_mode == "no_comm":
@@ -69,41 +78,63 @@ class Trainer:
             return 3
         return 0
 
-    def train(self):
-        print(f"Starting training with communication mode: {self.comm_mode}")
-        print(f"Number of episodes: {self.num_episodes}")
+    def train(self) -> Dict:
+        """Run training loop. Returns summary statistics."""
+        print(f"Starting training | mode={self.comm_mode} | episodes={self.num_episodes}")
 
         for episode in range(self.num_episodes):
             buffers, episode_info = self._run_episode()
-
             update_info = self.ppo.update(buffers)
+
+            self.reward_history.append(episode_info["total_reward"])
+
+            success = 1.0 if episode_info["total_collections"] >= 5 else 0.0
+            self.success_history.append(success)
+
+            coord_rate = 0.0
+            if episode_info["total_collections"] > 0:
+                coord_rate = episode_info["coordination_events"] / max(1, episode_info["total_collections"])
 
             self.logger.log_episode(
                 episode_reward=episode_info["total_reward"],
-                resources_collected=episode_info["resources_collected"],
+                resources_collected=episode_info["total_collections"],
                 communication_entropy=episode_info["comm_entropy"],
                 episode_length=episode_info["episode_length"],
+                coordination_events=episode_info["coordination_events"],
+                coordination_rate=coord_rate,
+                message_diversity=episode_info["message_diversity"],
+                policy_loss=update_info["policy_loss"],
+                value_loss=update_info["value_loss"],
+                entropy=update_info["entropy"],
             )
 
-            if episode % 10 == 0:
+            if episode % 50 == 0:
+                recent_reward = np.mean(self.reward_history[-50:])
+                recent_success = np.mean(self.success_history[-50:])
                 print(
-                    f"Episode {episode} | "
-                    f"Reward: {episode_info['total_reward']:.2f} | "
-                    f"Resources: {episode_info['resources_collected']} | "
-                    f"Comm Entropy: {episode_info['comm_entropy']:.4f} | "
-                    f"Policy Loss: {update_info['policy_loss']:.4f}"
+                    f"  ep {episode:>5d} | "
+                    f"reward {recent_reward:6.2f} | "
+                    f"success {recent_success:.2f} | "
+                    f"collections {episode_info['total_collections']:>2d} | "
+                    f"entropy {episode_info['comm_entropy']:.3f} | "
+                    f"ploss {update_info['policy_loss']:.4f}"
                 )
 
         self.logger.close()
-        print("Training complete.")
+        print(f"Training complete for mode={self.comm_mode}")
+
+        return {
+            "reward_history": self.reward_history,
+            "success_history": self.success_history,
+            "comm_mode": self.comm_mode,
+        }
 
     def _run_episode(self):
         observations = self.env.reset()
         buffers = [RolloutBuffer() for _ in range(self.num_agents)]
 
         total_reward = 0.0
-        resources_collected = 0
-        all_messages = []
+        all_messages: List[np.ndarray] = []
 
         prev_messages = [self.channel.get_empty_message() for _ in range(self.num_agents)]
 
@@ -153,20 +184,25 @@ class Trainer:
                 buffers[i].dones[-1] = done
 
             total_reward += sum(rewards)
-            resources_collected += info["resources_collected"]
             observations = next_observations
 
             if done:
                 break
 
         comm_entropy = 0.0
+        message_diversity = 0.0
         if self.channel.enabled and len(all_messages) > 0:
             comm_entropy = compute_communication_entropy(all_messages, self.channel.vocab_size)
+            message_diversity = compute_message_diversity(all_messages)
+
+        env_stats = self.env.get_episode_stats()
 
         episode_info = {
             "total_reward": total_reward,
-            "resources_collected": resources_collected,
+            "total_collections": env_stats["total_collections"],
+            "coordination_events": env_stats["coordination_events"],
             "comm_entropy": comm_entropy,
+            "message_diversity": message_diversity,
             "episode_length": self.env.step_count,
         }
 

@@ -1,12 +1,13 @@
 communication_mode: "no_comm"
 resource_spawn_rate: 10
-shared_reward: false
+shared_reward: true
 
 grid_size: 10
 num_agents: 2
 max_steps: 100
 max_resources: 5
-num_episodes: 1000
+vision_radius: 3
+num_episodes: 500
 
 learning_rate: 0.0003
 gamma: 0.99

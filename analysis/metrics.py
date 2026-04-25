@@ -1,11 +1,12 @@
 import numpy as np
-from typing import List, Optional
+from typing import List
 
 
 def compute_communication_entropy(
     messages: List[np.ndarray],
     vocab_size: int = 8,
 ) -> float:
+    """Shannon entropy (bits) of the token distribution across all messages."""
     if len(messages) == 0:
         return 0.0
 
@@ -33,6 +34,18 @@ def compute_communication_entropy(
             entropy -= p * np.log2(p)
 
     return float(entropy)
+
+
+def compute_message_diversity(
+    messages: List[np.ndarray],
+) -> float:
+    """Fraction of unique messages out of total messages sent."""
+    if len(messages) == 0:
+        return 0.0
+    unique = set()
+    for msg in messages:
+        unique.add(tuple(msg.tolist()))
+    return len(unique) / len(messages)
 
 
 def compute_average_reward(episode_rewards: List[float]) -> float:
